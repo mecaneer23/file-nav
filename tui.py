@@ -1,55 +1,34 @@
 #!/usr/bin/env python3
 
 import curses
-import subprocess
-import os
+from pathlib import Path
 import sys
 
 
-def run(command: list):
-    return (
-        subprocess.Popen(
-            safe_split(command), stdout=subprocess.PIPE
-        )  # , stderr=open("error.txt", 'w'))
-        .communicate()[0]
-        .decode()
-        .split("\n")[:-1]
-    )
+def make_printable_sublist(height: int, lst: list, cursor: int):
+    if len(lst) < height:
+        return lst, cursor
+    start = max(0, cursor - height // 2)
+    end = min(len(lst), start + height)
+    if end - start < height:
+        if start == 0:
+            end = min(len(lst), height)
+        else:
+            start = max(0, end - height)
+    sublist = lst[start:end]
+    cursor -= start
+    return sublist, cursor
 
 
-def safe_split(lst, sep=" "):
-    output = []
-    temp = ""
-    i = 0
-    while i < len(lst):
-        if lst[i] == "\\":
-            temp += " "
-            i += 2
-            continue
-        if lst[i] == sep:
-            output.append(temp)
-            temp = ""
-            i += 1
-            continue
-        temp += lst[i]
-        i += 1
-    output.append(temp)
-    return output
-
-
-def print_items(win, items, selected, maxlen):
-    selected = len(items) - selected - 1
-    for i in range(9):
-        win.addstr(i + 1, 2, " " * maxlen)
-    for i, v in enumerate(items[::-1]):
-        if i < selected + 5 and i > selected - 5:
-            win.addstr(
-                selected + 5 - i,
-                2,
-                v,
-                curses.A_REVERSE if i == selected else 0,
-            )
-    win.refresh()
+def print_items(win, items, selected):
+    items, selected = make_printable_sublist(win.getmaxyx()[0] - 2, items, selected)
+    for i, v in enumerate(items):
+        win.addstr(
+            i + 1,
+            1,
+            v.split("/")[-1],
+            curses.A_REVERSE if i == selected else 0,
+        )
 
 
 def ensure_within_bounds(counter, minimum, maximum):
@@ -61,15 +40,15 @@ def ensure_within_bounds(counter, minimum, maximum):
         return counter
 
 
-def explore_dir(stdscr, directory):
+def explore_dir(stdscr, directory: Path):
     selected = 0
-    items = run(f"ls -a {directory}")
-    assert items, repr(directory)
-    maxlen = len(max(items, key=len))
-    items = [i.ljust(maxlen) for i in items]
+    items = [".."] + sorted([i for i in directory.iterdir()])
+    assert items, directory
+    maxlen = len(str(max(items, key=lambda x: len(str(x)))))
+    items = [str(i).ljust(maxlen) for i in items]
     scroll = curses.newwin(
-        11,
-        maxlen + 4,
+        min(stdscr.getmaxyx()[0] // 2, len(items) + 2),
+        maxlen + 2,
         stdscr.getmaxyx()[0] // 10,
         (stdscr.getmaxyx()[1] - (maxlen + 1)) // 2,
     )
@@ -77,12 +56,13 @@ def explore_dir(stdscr, directory):
 
     while True:
         scroll.box()
-        print_items(scroll, items, selected, maxlen)
+        stdscr.addstr(stdscr.getmaxyx()[0] // 10 - 1, (stdscr.getmaxyx()[1] - (maxlen + 1)) // 2 - (len(str(directory)) // 2), str(directory))
+        print_items(scroll, items, selected)
         scroll.refresh()
         stdscr.refresh()
         try:
-            key = stdscr.getch()  # python3 -c "print(ord('x'))"
-        except KeyboardInterrupt:  # exit on ^C
+            key = stdscr.getch()
+        except KeyboardInterrupt:  # ^C
             return
         if key in (259, 107):  # up | k
             selected -= 1
@@ -91,35 +71,20 @@ def explore_dir(stdscr, directory):
         elif key in (113, 27):  # q | esc
             return
         elif key == 10:  # enter
-            path = f"{directory}/{items[selected]}".strip()
-            if not os.path.isdir(path.replace("\\", "")):
-                exit(repr(path))
+            path = Path(str(directory.joinpath(Path(items[selected]).name)).strip())
+            if path.is_file():
+                exit(path)
             return path
         else:
             continue
         selected = ensure_within_bounds(selected, 0, len(items))
 
 
-def replace_backslash(string):
-    output = ""
-    i = 0
-    while i < len(string):
-        if string[i] == " " and string[i - 1] != "\\":
-            output += "\\ "
-            i += 1
-            continue
-        output += string[i]
-        i += 1
-    return output
-
-
-def main(stdscr, directory: str):
+def main(stdscr, directory: Path):
     curses.use_default_colors()
     curses.curs_set(0)
     while True:
-        directory = replace_backslash(
-            explore_dir(stdscr, directory.rstrip("/").replace("/./", "/"))
-        )
+        directory = explore_dir(stdscr, directory)
         if directory is None:
             return
         stdscr.clear()
@@ -128,9 +93,5 @@ def main(stdscr, directory: str):
 if __name__ == "__main__":
     curses.wrapper(
         main,
-        directory=(replace_backslash(sys.argv[1])
-        if len(sys.argv[1]) > 1
-        else f"/usr/../{sys.argv[1]}")
-        if len(sys.argv) > 1
-        else os.getcwd().replace(" ", "\ "),
+        directory=Path(sys.argv[1]).absolute() if len(sys.argv) > 1 else Path("."),
     )
